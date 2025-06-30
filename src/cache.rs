@@ -145,7 +145,7 @@ where
             println!("key : {key}");
             if let Ok(Some(bytes)) = conn.get::<_, Option<String>>(&key).await {
 
-                //for write-behind
+                //call write function
                 write_function(db.clone(), bytes.clone()).await;
 
                 //delete key
@@ -179,13 +179,14 @@ where
     
     println!("{} Redis expired event listening", "Start".green().bold());
     while let Some(msg) = pubsub_conn.on_message().next().await {
-        println!("감지됨");
         let expired_key: String = msg.get_payload().unwrap();
 
-        // delete:/posts/ 만 감지
         let prefix = format!("delete:{}:", root_key);
         if let Some(post_id_str) = expired_key.strip_prefix(&prefix) {
+
+            // call delete_function
             delete_function(db.clone(), post_id_str.to_string()).await;
+            
         }
     }
 }
