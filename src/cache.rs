@@ -74,8 +74,8 @@ impl CacheManager {
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
-        tokio::spawn(write_behind(conn.clone(), db.clone(), put_function));
-        tokio::spawn(delete_event_listener(client, db.clone(), delete_function));
+        tokio::spawn(write_behind(conn.clone(), db.clone(), key.clone(), put_function));
+        tokio::spawn(delete_event_listener(client, db.clone(), key.clone(), delete_function));
         CacheManager {
             conn,
             key,
@@ -118,7 +118,12 @@ pub async fn init_cache() ->  redis::Client {
 }
 
 //background worker
-pub async fn write_behind<F, Fut>(mut conn: MultiplexedConnection, db: SqlitePool, write_function :F)
+pub async fn write_behind<F, Fut> (
+    mut conn: MultiplexedConnection,
+    db: SqlitePool,
+    root_key: String,
+    write_function :F
+)
 where
     F: Fn(SqlitePool, String) -> Fut,
     Fut: Future<Output = ()>,
@@ -126,7 +131,8 @@ where
     println!("{} Redis write behind thread", "Start".green().bold());
     loop {
         // Redis에서 post:* 키들을 스캔
-        let keys: Vec<String> = match conn.keys("dirty:/posts/*").await {
+        let dirty_key = format!("dirty:{}:*", root_key);
+        let keys: Vec<String> = match conn.keys(&dirty_key).await {
             Ok(k) => k,
             Err(e) => {
                 eprintln!("❌ Failed to get keys: {e}");
@@ -158,6 +164,7 @@ where
 pub async fn delete_event_listener<F, Fut>(
     client: redis::Client,
     db: SqlitePool,
+    root_key: String,
     delete_function: F,
 )
 where
@@ -176,8 +183,11 @@ where
         let expired_key: String = msg.get_payload().unwrap();
 
         // delete:/posts/ 만 감지
-        if let Some(post_id_str) = expired_key.strip_prefix("delete:/posts/") {
+        let prefix = format!("delete:{}:", root_key);
+        if let Some(post_id_str) = expired_key.strip_prefix(&prefix) {
             delete_function(db.clone(), post_id_str.to_string()).await;
         }
     }
 }
+
+

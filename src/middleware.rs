@@ -27,6 +27,8 @@ pub async fn middleware(
     .map(|pq| pq.as_str().to_string()) // 👈 복사
     .unwrap_or_else(|| "".to_string());
 
+    let key = normalize_path(&key);
+
     // 이미 삭제된거면, 안보이게 해야 함 
     let del_key = String::from("delete:") + &key;
     let mut conn = state.conn;
@@ -43,19 +45,14 @@ pub async fn middleware(
     //삭제 안됐을때.
     match req.method() {
         &Method::GET => {
-            println!("GET");
 
             if let Some(cached_body) = get_dirty_or_clean(&mut conn, &key).await? {
                 return Ok(build_cached_response(cached_body));
             }
-
-            println!("❌ Cache miss");
             // 계속 진행
         }
 
         &Method::PUT => {
-            println!("PUT");
-
             if let Some(cached_body) = get_dirty_or_clean(&mut conn, &key).await? {
                 let (_, body) = req.into_parts();
                 let collected = body.collect().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -78,13 +75,10 @@ pub async fn middleware(
                 );
             }
 
-            println!("❌ Cache miss");
             // 계속 진행
         }
 
         &Method::DELETE => {
-            println!("DEL");
-
             let _: RedisResult<i32> = conn.del(&key).await;
             let _: RedisResult<i32> = conn.del(&format!("dirty:{}", key)).await;
             let _: RedisResult<()> = conn.set_ex(&format!("delete:{}", key), "1", 10).await;
@@ -166,4 +160,10 @@ fn build_cached_response(body: String) -> Response<Body> {
         .header("Content-Type", "application/json")
         .body(Body::from(body))
         .unwrap()
+}
+
+
+fn normalize_path(path: &str) -> String {
+    let trimmed = path.strip_prefix('/').unwrap_or(path);
+    trimmed.replace('/', ":")
 }
