@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # DB 관련
-sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros", "uuid", "chrono"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "macros", "uuid", "chrono"] }
 
 # cache
 tower = "0.4"
@@ -21,3 +21,8 @@ futures-util = "0.3.31"
 
 # pretty print
 colored = "2"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"]}
+mockall = "0.12"
+sqlx = { version = "0.7", features = ["sqlite", "postgres"] }
