@@ -12,7 +12,6 @@ use http_body_util::BodyExt;
 use bytes::Bytes;
 use axum::body::Body;
 
-
 use crate::cache;
 
 //middleware
@@ -24,25 +23,30 @@ pub async fn middleware(
     let key = req
     .uri()
     .path_and_query()
-    .map(|pq| pq.as_str().to_string()) // 👈 복사
-    .unwrap_or_else(|| "".to_string());
+    .map(|pq| pq.as_str().to_string()); // 👈 복사
+
+    let key = match key {
+        Some(k) => k,
+        None => return Err(StatusCode::BAD_REQUEST),
+    };
 
     let key = normalize_path(&key);
 
-    // 이미 삭제된거면, 안보이게 해야 함 
+    // if already deleted, return 404
     let del_key = String::from("delete:") + &key;
     let mut conn = state.conn;
     let write_to_cache = state.write_to_cache;
     if conn.exists(&del_key).await.unwrap() {
         let final_response = Response::builder()
             .status(404)
-            .body(Body::empty())
-            .unwrap();
-
-        return Ok(final_response);
+            .body(Body::empty());
+        match final_response {
+            Ok(resp) => return Ok(resp),
+            Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+        };
     }
 
-    //삭제 안됐을때.
+    //in db
     match req.method() {
         &Method::GET => {
 
@@ -62,7 +66,7 @@ pub async fn middleware(
                 let response_bytes = response_json.into_bytes();
 
                 let dirty_key = format!("dirty:{}", key);
-                conn.set(&dirty_key, &response_bytes).await.unwrap_or(());
+                let _: () = conn.set(&dirty_key, &response_bytes).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let _: RedisResult<i32> = conn.del(&key).await;
 
                 return Ok(
@@ -90,10 +94,7 @@ pub async fn middleware(
                     .unwrap()
             );
         }
-
-        _ => {
-            println!("🔴 기타 요청");
-        }
+        _ => ()
     }
 
     let method = req.method().clone();
@@ -111,9 +112,14 @@ pub async fn middleware(
             let bytes: Bytes = collected.to_bytes(); // bytes로 변환
             let string_body = String::from_utf8_lossy(&bytes).to_string();
             // Redis에 저장 (TTL: 60초)
-            let _: () = conn.set_ex::<_, _, ()>(key, string_body, 60).await.unwrap_or(());
+            match conn.set_ex::<_, _, ()>(key, string_body, 60).await {
+                Ok(_) => (),
+                Err(e) => {
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
 
-            //response 재조립립
+            //response 재조립
             let final_response = Response::from_parts(parts, Body::from(bytes));
             Ok(final_response)
         },

@@ -1,7 +1,8 @@
 //src/cache.rs
 
 use sqlx::{
-    SqlitePool,
+    Database,
+    Pool,
 };
 
 use std::future::Future;
@@ -12,16 +13,15 @@ use redis::{aio::MultiplexedConnection, AsyncCommands};
 use colored::*;
 use futures_util::StreamExt;
 
-use sqlx::{Pool, Sqlite};
 
-pub struct CacheConnection {
+pub struct CacheConnection<DB: Database> {
     client : redis::Client,
     conn : MultiplexedConnection,
-    db : SqlitePool
+    db : Pool<DB>
 }
 
-impl CacheConnection {
-    pub async fn new(db : SqlitePool) -> CacheConnection {
+impl<DB: Database> CacheConnection<DB> {
+    pub async fn new (db : Pool<DB>) -> CacheConnection<DB> {
         let redis_client =redis::Client::open("redis://127.0.0.1/").unwrap();
         let mut con = redis_client.get_connection().unwrap();
         let _: () = redis::cmd("CONFIG")
@@ -42,8 +42,8 @@ impl CacheConnection {
         put_cache_function: fn(String, String) -> String
     ) -> CacheManager 
     where
-        F: Fn(Pool<Sqlite>, String) -> Fut1 + Send + Sync + 'static,
-        G: Fn(Pool<Sqlite>, String) -> Fut2 + Send + Sync + 'static,
+        F: Fn(Pool<DB>, String) -> Fut1 + Send + Sync + 'static,
+        G: Fn(Pool<DB>, String) -> Fut2 + Send + Sync + 'static,
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
@@ -53,24 +53,24 @@ impl CacheConnection {
 pub struct CacheManager {
     pub conn : MultiplexedConnection,
     key: String,
-    // put_function: Arc<dyn Fn(Pool<Sqlite>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-    // delete_function: Arc<dyn Fn(Pool<Sqlite>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    // put_function: Arc<dyn Fn(Pool<DB>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+    // delete_function: Arc<dyn Fn(Pool<DB>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     put_cache_function: fn(String, String) -> String,
 }
 
 impl CacheManager {
-    fn new<F, G, Fut1, Fut2>(
+    fn new<F, G, Fut1, Fut2, DB : Database>(
         client : redis::Client,
         conn: MultiplexedConnection,
-        db : SqlitePool,
+        db : Pool<DB>,
         key: String,
         put_function: F,
         delete_function: G,
         put_cache_function: fn(String, String) -> String,
     ) -> CacheManager
     where
-        F: Fn(Pool<Sqlite>, String) -> Fut1 + Send + Sync + 'static,
-        G: Fn(Pool<Sqlite>, String) -> Fut2 + Send + Sync + 'static,
+        F: Fn(Pool<DB>, String) -> Fut1 + Send + Sync + 'static,
+        G: Fn(Pool<DB>, String) -> Fut2 + Send + Sync + 'static,
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
@@ -118,15 +118,16 @@ pub async fn init_cache() ->  redis::Client {
 }
 
 //background worker
-pub async fn write_behind<F, Fut> (
+pub async fn write_behind<F, Fut, DB> (
     mut conn: MultiplexedConnection,
-    db: SqlitePool,
+    db: Pool<DB>,
     root_key: String,
     write_function :F
 )
 where
-    F: Fn(SqlitePool, String) -> Fut,
+    F: Fn(Pool<DB>, String) -> Fut,
     Fut: Future<Output = ()>,
+    DB: Database,
 {
     println!("{} Redis write behind thread", "Start".green().bold());
     loop {
@@ -161,14 +162,14 @@ where
 }
 
 
-pub async fn delete_event_listener<F, Fut>(
+pub async fn delete_event_listener<F, Fut, DB : Database>(
     client: redis::Client,
-    db: SqlitePool,
+    db: Pool<DB>,
     root_key: String,
     delete_function: F,
 )
 where
-    F: Fn(SqlitePool, String) -> Fut,
+    F: Fn(Pool<DB>, String) -> Fut,
     Fut: Future<Output = ()>,
 {
     
