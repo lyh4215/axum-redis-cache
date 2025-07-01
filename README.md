@@ -26,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum-redis-cache = { git = "https://github.com/yourname/axum-redis-cache.git", branch = "main" }
+axum-redis-cache = { git = "https://github.com/lyh4215/axum-redis-cache.git", branch = "main" }
 ```
 
 ## example
