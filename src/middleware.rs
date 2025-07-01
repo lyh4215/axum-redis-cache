@@ -1,11 +1,10 @@
-//src/middleware.rs
+// src/middleware.rs
 
 use axum::{
-    extract::{State}, 
+    extract::State,
     http::{Request, Response, StatusCode},
-    middleware::{Next},
+    middleware::Next,
 };
-
 use redis::{AsyncCommands, RedisResult, aio::MultiplexedConnection};
 use axum::http::Method;
 use http_body_util::BodyExt;
@@ -14,16 +13,22 @@ use axum::body::Body;
 
 use crate::cache;
 
-//middleware
+/// Main middleware for cache handling.
+///
+/// Handles GET, PUT, DELETE logic with Redis backend.
+/// - Returns cached data if present
+/// - Marks as dirty on PUT
+/// - Soft-deletes via `delete:` key on DELETE
 pub async fn middleware(
     State(state): State<cache::CacheState>,
     req: Request<Body>,
-    next: Next
+    next: Next,
 ) -> Result<Response<Body>, StatusCode> {
+    // Extract key from path and query
     let key = req
-    .uri()
-    .path_and_query()
-    .map(|pq| pq.as_str().to_string()); // 👈 복사
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string());
 
     let key = match key {
         Some(k) => k,
@@ -32,7 +37,7 @@ pub async fn middleware(
 
     let key = normalize_path(&key);
 
-    // if already deleted, return 404
+    // Check for deleted marker in Redis
     let del_key = String::from("delete:") + &key;
     let mut conn = state.conn;
     let write_to_cache = state.write_to_cache;
@@ -46,25 +51,26 @@ pub async fn middleware(
         };
     }
 
-    //in db
+    // Dispatch based on HTTP method
     match req.method() {
         &Method::GET => {
-
+            // Try dirty or clean cache hit
             if let Some(cached_body) = get_dirty_or_clean(&mut conn, &key).await? {
                 return Ok(build_cached_response(cached_body));
             }
-            // 계속 진행
+            // Continue if cache miss
         }
-
         &Method::PUT => {
             if let Some(cached_body) = get_dirty_or_clean(&mut conn, &key).await? {
                 let (_, body) = req.into_parts();
                 let collected = body.collect().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let new_body = String::from_utf8_lossy(&collected.to_bytes()).to_string();
 
+                // Call custom cache merger (usually JSON merge)
                 let response_json = write_to_cache(cached_body, new_body);
                 let response_bytes = response_json.into_bytes();
 
+                // Store as dirty, delete clean
                 let dirty_key = format!("dirty:{}", key);
                 let _: () = conn.set(&dirty_key, &response_bytes).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let _: RedisResult<i32> = conn.del(&key).await;
@@ -75,14 +81,13 @@ pub async fn middleware(
                         .header("X-Cache", "HIT")
                         .header("Content-Type", "application/json")
                         .body(Body::from(response_bytes))
-                        .unwrap()
+                        .unwrap(),
                 );
             }
-
-            // 계속 진행
+            // Continue if cache miss
         }
-
         &Method::DELETE => {
+            // Remove both dirty/clean, mark deleted for soft delete TTL
             let _: RedisResult<i32> = conn.del(&key).await;
             let _: RedisResult<i32> = conn.del(&format!("dirty:{}", key)).await;
             let _: RedisResult<()> = conn.set_ex(&format!("delete:{}", key), "1", 10).await;
@@ -91,45 +96,42 @@ pub async fn middleware(
                 Response::builder()
                     .status(204)
                     .body(Body::empty())
-                    .unwrap()
+                    .unwrap(),
             );
         }
-        _ => ()
+        _ => (),
     }
 
     let method = req.method().clone();
-    // 없으면 요청을 처리
+    // Forward to real handler if cache miss
     let response = next.run(req).await;
 
-    //GET : Cache miss
-    //PUT : Cache miss
-    //DELETE : not reached
+    // After handler: Optionally cache (GET, PUT) result
     match method {
         Method::GET | Method::PUT => {
-            // 바디 추출
+            // Extract response body
             let (parts, body) = response.into_parts();
             let collected = body.collect().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let bytes: Bytes = collected.to_bytes(); // bytes로 변환
+            let bytes: Bytes = collected.to_bytes();
             let string_body = String::from_utf8_lossy(&bytes).to_string();
-            // Redis에 저장 (TTL: 60초)
+            // Store in Redis (TTL: 60s)
             match conn.set_ex::<_, _, ()>(key, string_body, 60).await {
                 Ok(_) => (),
-                Err(e) => {
+                Err(_) => {
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);
                 }
             }
-
-            //response 재조립
+            // Reassemble response
             let final_response = Response::from_parts(parts, Body::from(bytes));
             Ok(final_response)
-        },
-        _ => Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+        _ => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
-
 }
 
-
-/// dirty → clean 순으로 조회하는 공통 헬퍼
+/// Try dirty cache first, then clean cache.
+///
+/// Returns: Some(body) if hit, None if miss.
 async fn get_dirty_or_clean(
     conn: &mut MultiplexedConnection,
     key: &str,
@@ -158,7 +160,7 @@ async fn get_dirty_or_clean(
     }
 }
 
-/// 캐시 HIT 시 응답 생성
+/// Build an Axum Response from cached data.
 fn build_cached_response(body: String) -> Response<Body> {
     Response::builder()
         .status(200)
@@ -168,7 +170,7 @@ fn build_cached_response(body: String) -> Response<Body> {
         .unwrap()
 }
 
-
+/// Normalize path to redis key (ex: "/foo/bar" => "foo:bar")
 fn normalize_path(path: &str) -> String {
     let trimmed = path.strip_prefix('/').unwrap_or(path);
     trimmed.replace('/', ":")

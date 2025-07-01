@@ -1,6 +1,15 @@
-/// Thank you for using the `cache` module!
-/// If you want to contribute or report issues, feel free to visit our GitHub repository.
-/// You can also find documentation and examples there.
+// src/lib.rs
+
+//! # Redis-backed Write-behind Cache for Axum
+//!
+//! - GET/PUT/DELETE cache middleware
+//! - Write-behind worker
+//! - Expired event listener
+//!
+//!
+//!
+//!
+//! For usage and examples, see [README](https://github.com/lyh4215/axum-redis-cache).
 
 mod cache;
 mod middleware;
