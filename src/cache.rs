@@ -13,16 +13,46 @@ use redis::{aio::MultiplexedConnection, AsyncCommands};
 use colored::*;
 use futures_util::StreamExt;
 
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub redis_url: String,
+    pub write_duration: u64, // in seconds
+}
 
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            redis_url: "redis://127.0.0.1/".to_string(),
+            write_duration: 60, // default write duration in seconds
+        }
+    }
+}
+
+impl CacheConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_url(mut self, url: &str) -> Self {
+        self.redis_url = url.to_string();
+        self
+    }
+
+    pub fn with_write_duration(mut self, duration: u64) -> Self {
+        self.write_duration = duration;
+        self
+    }
+}
 pub struct CacheConnection<DB: Database> {
     client : redis::Client,
     conn : MultiplexedConnection,
-    db : Pool<DB>
+    db : Pool<DB>,
+    config : CacheConfig,
 }
 
 impl<DB: Database> CacheConnection<DB> {
     pub async fn new (db : Pool<DB>) -> CacheConnection<DB> {
-        let redis_client =redis::Client::open("redis://127.0.0.1/").unwrap();
+        let redis_client =redis::Client::open("redis://127.0.0.1/").expect("Invalid Redis URL");
         let mut con = redis_client.get_connection().unwrap();
         let _: () = redis::cmd("CONFIG")
             .arg("SET")
@@ -31,7 +61,24 @@ impl<DB: Database> CacheConnection<DB> {
             .query(&mut con).unwrap();
         let conn = redis_client.get_multiplexed_async_connection().await.unwrap();
         
-        CacheConnection {client: redis_client, conn, db}
+        CacheConnection {client: redis_client, conn, db, config: CacheConfig::default() }
+    }
+
+    pub async fn new_with_config(
+        db: Pool<DB>,
+        config : CacheConfig,
+    ) -> CacheConnection<DB> {
+        let redis_client = redis::Client::open(config.redis_url.clone()).expect("Invalid Redis URL");
+        let mut con = redis_client.get_connection().expect("Failed to connect to Redis");
+        let _: () = redis::cmd("CONFIG")
+            .arg("SET")
+            .arg("notify-keyspace-events")
+            .arg("Ex")
+            .query(&mut con).expect("Failed to set Redis config (PubSub)");
+        let conn = redis_client.get_multiplexed_async_connection().await
+            .expect("Failed to get Redis multiplexed connection");
+        
+        CacheConnection {client: redis_client, conn, db, config}
     }
 
     pub fn get_manager<F, G, Fut1, Fut2> (
@@ -47,12 +94,13 @@ impl<DB: Database> CacheConnection<DB> {
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
-        CacheManager::new(self.client.clone(), self.conn.clone(), self.db.clone(), key, put_function, delete_function, put_cache_function)
+        CacheManager::new(self.client.clone(), self.conn.clone(), self.db.clone(), key, self.config.clone(), put_function, delete_function, put_cache_function)
     }
 }
 pub struct CacheManager {
     pub conn : MultiplexedConnection,
     key: String,
+    config: CacheConfig,
     // put_function: Arc<dyn Fn(Pool<DB>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     // delete_function: Arc<dyn Fn(Pool<DB>, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     put_cache_function: fn(String, String) -> String,
@@ -64,6 +112,7 @@ impl CacheManager {
         conn: MultiplexedConnection,
         db : Pool<DB>,
         key: String,
+        config: CacheConfig,
         put_function: F,
         delete_function: G,
         put_cache_function: fn(String, String) -> String,
@@ -74,11 +123,12 @@ impl CacheManager {
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
-        tokio::spawn(write_behind(conn.clone(), db.clone(), key.clone(), put_function));
+        tokio::spawn(write_behind(conn.clone(), db.clone(), key.clone(), config.write_duration.clone(), put_function));
         tokio::spawn(delete_event_listener(client, db.clone(), key.clone(), delete_function));
         CacheManager {
             conn,
             key,
+            config,
             put_cache_function,
             // put_function: Arc::new(move |pool, s| Box::pin(put_function(pool, s))),
             // delete_function: Arc::new(move |pool, s| Box::pin(delete_function(pool, s))),),
@@ -105,23 +155,12 @@ pub struct CacheState {
     pub write_to_cache: fn(String, String) -> String,
 }
 
-pub async fn init_cache() ->  redis::Client {
-    //redis setting (keyevent notification channel)
-    let redis_client =redis::Client::open("redis://127.0.0.1/").unwrap();
-    let mut conn = redis_client.get_connection().unwrap();
-    let _: () = redis::cmd("CONFIG")
-        .arg("SET")
-        .arg("notify-keyspace-events")
-        .arg("Ex")
-        .query(&mut conn).unwrap();
-    redis_client
-}
-
 //background worker
-pub async fn write_behind<F, Fut, DB> (
+async fn write_behind<F, Fut, DB> (
     mut conn: MultiplexedConnection,
     db: Pool<DB>,
     root_key: String,
+    duration : u64,
     write_function :F
 )
 where
@@ -157,12 +196,12 @@ where
             }
         }
         // 10초마다 반복
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(duration)).await;
     }
 }
 
 
-pub async fn delete_event_listener<F, Fut, DB : Database>(
+async fn delete_event_listener<F, Fut, DB : Database>(
     client: redis::Client,
     db: Pool<DB>,
     root_key: String,
