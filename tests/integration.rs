@@ -11,7 +11,7 @@ use axum::{
 };
 use tower::ServiceExt;
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
-use axum_redis_cache::{CacheConnection, middleware as my_middleware}; // 경로에 따라 조정
+use axum_redis_cache::{CacheConnection}; // 경로에 따라 조정
 use std::{env, time::Duration};
 use tokio::time::sleep;
 
