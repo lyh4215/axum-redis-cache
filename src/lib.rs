@@ -10,8 +10,8 @@
 //! 
 //! You can use sqlx DB.
 //! Use Example (with no custom config : you can't change config in this case):
-//! ```rust,no_run
-//! let db : sqlx::Pool<DB> /* your DB */
+//! ```rust,ignore
+//! let db : sqlx::Pool<DB> = /* your DB */;
 //! let cache_connection = axum_redis_cache::CacheConnection::new(db.clone()).await;
 //! let key = String::from("posts");
 //! 
