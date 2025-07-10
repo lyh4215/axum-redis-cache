@@ -3,7 +3,7 @@
 `axum-redis-cache` is a Redis caching middleware and background worker for [Axum](https://github.com/tokio-rs/axum).
 
 It enables **easily adding CRUD Redis caching** to your Axum applications with **write-behind policy support**.
-
+![Diagram](.github/images/diagram.png)
 
 ## Key Features
 You should inject your own logic to read, write, or delete data from your database.

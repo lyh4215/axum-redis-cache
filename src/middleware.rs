@@ -14,11 +14,12 @@ use axum::body::Body;
 use crate::cache;
 
 /// Main middleware for cache handling.
+/// You can use other cache middleware functions, and not use this one.
 ///
 /// Handles GET, PUT, DELETE logic with Redis backend.
 /// - Returns cached data if present
 /// - Marks as dirty on PUT
-/// - Soft-deletes via `delete:` key on DELETE
+/// - deferred delete via `delete:` key on DELETE
 pub async fn middleware(
     State(state): State<cache::CacheState>,
     req: Request<Body>,

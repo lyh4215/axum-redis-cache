@@ -5,6 +5,77 @@
 //! - GET/PUT/DELETE cache middleware
 //! - Write-behind worker
 //! - Expired event listener
+//! 
+//! # Example
+//! 
+//! You can use sqlx DB.
+//! Use Example (with no custom config : you can't change config in this case):
+//! ```rust,no_run
+//! let db : sqlx::Pool<DB> /* your DB */
+//! let cache_connection = axum_redis_cache::CacheConnection::new(db.clone()).await;
+//! let key = String::from("posts");
+//! 
+//! struct Post {
+//!     id: i32,
+//!     content: String,
+//!     writer : i32,
+//! }
+//! 
+//! struct PostUpdate {
+//!    content: Option<String>,
+//! }
+//! 
+//! async fn write_callback<DB>(db: sqlx::Pool<DB>, body: String) {
+//!     let json : Post = serde_json::from_str(&body).unwrap();
+//!     sqlx::query(
+//!         "UPDATE posts
+//!         SET content = $2
+//!         WHERE id = $1")
+//!     .bind(json.id)
+//!     .bind(json.content)
+//!     .execute(&db)
+//!     .await
+//!     .unwrap();
+//! }
+//! 
+//! 
+//! async fn delete_callback<DB>(db: sqlx::Pool<DB>, id: String) {
+//!     if let Ok(id) = id.parse::<i32>() {
+//!         sqlx::query("DELETE FROM posts WHERE id = $1")
+//!            .bind(id)
+//!            .execute(&db)
+//!            .await
+//!            .unwrap(); 
+//!     }
+//! }
+//! 
+//! async fn update_entity(old: String, new: String) {
+//!     let mut post: Post = serde_json::from_str(&old).unwrap();
+//!     let new_post: PostUpdate = serde_json::from_str(&new).unwrap();
+//!     if let Some(content) = new_post.content {
+//!        post.content = content;
+//!     }
+//!     serde_json::to_string(&post).unwrap()
+//! }
+//! 
+//! let cache_manager = cache_connection.get_manager(
+//!     key,
+//!     write_callback,
+//!     delete_callback,
+//!     update_entity,
+//! );
+//! 
+//! let routes = axum::Router::new()
+//!     .route("/posts/:id", get(/* your get handler */)
+//!                         .delete( /* your delete handler */)
+//!                         .put( /* your put handler */))
+//!     .layer(axum::middleware::from_fn_with_state(
+//!         cache_manager.get_state(),
+//!         axum_redis_cache::middleware
+//!     ));
+//! ```
+//! 
+//! By this, you can use Axum middleware to cache your data.
 //!
 //!
 //!
