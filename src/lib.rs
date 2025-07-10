@@ -49,7 +49,7 @@
 //!     }
 //! }
 //! 
-//! async fn update_entity(old: String, new: String) {
+//! async fn update_entity(old: String, new: String) -> String {
 //!     let mut post: Post = serde_json::from_str(&old).unwrap();
 //!     let new_post: PostUpdate = serde_json::from_str(&new).unwrap();
 //!     if let Some(content) = new_post.content {
