@@ -271,6 +271,15 @@ where
         }
     };
 
+    //TODO : not create in here.
+    let mut conn = match client.get_multiplexed_async_connection().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("❌ Failed to get multiplexed connection: {e}");
+            return;
+        }
+    };
+
     // Subscribe to Redis key expire events
     if let Err(e) = pubsub_conn.subscribe("__keyevent@0__:expired").await {
         eprintln!("❌ Failed to subscribe to key events: {e}");
@@ -295,7 +304,20 @@ where
             }
             _ = token.cancelled() => {
                 println!("{} Delete event listener shutting down...", "Shutdown".red().bold());
+                let delete_key = format!("delete:{}:*", root_key);
+                if let Ok(keys) = conn.keys::<_, Vec<String>>(&delete_key).await {
+                    let prefix = format!("delete:{}:", root_key);
+                    for key in keys {
+                        if let Some(post_id_str) = key.strip_prefix(&prefix) {
+                            // Call delete handler
+                            delete_function(db.clone(), post_id_str.to_string()).await;
+                            let _: () = conn.del(&key).await.unwrap_or(());
+                            println!("Final delete for: {key}");
+                        }
+                    }
+                    
                 break;
+                }
             }
         }
     }
