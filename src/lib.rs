@@ -11,6 +11,18 @@
 //! You can use sqlx DB.
 //! Use Example (with no custom config : you can't change config in this case):
 //! ```rust,ignore
+//! use tokio::sync::CancellationToken;
+//! 
+//! // Graceful shutdown setup
+//! let shutdown_token = CancellationToken::new();
+//! let token_clone = shutdown_token.clone();
+//! tokio::spawn(async move {
+//!     tokio::signal::ctrl_c().await.expect("failed to listen for ctrl-c");
+//!     println!("
+//! Ctrl-C received, initiating shutdown...");
+//!     token_clone.cancel();
+//! });
+//! 
 //! let db : sqlx::Pool<DB> = /* your DB */;
 //! let cache_connection = axum_redis_cache::CacheConnection::new(db.clone()).await;
 //! let key = String::from("posts");
@@ -58,11 +70,12 @@
 //!     serde_json::to_string(&post).unwrap()
 //! }
 //! 
-//! let cache_manager = cache_connection.get_manager(
+//! let mut cache_manager = cache_connection.get_manager(
 //!     key,
 //!     write_callback,
 //!     delete_callback,
 //!     update_entity,
+//!     shutdown_token.clone(),
 //! );
 //! 
 //! let routes = axum::Router::new()
@@ -73,9 +86,17 @@
 //!         cache_manager.get_state(),
 //!         axum_redis_cache::middleware
 //!     ));
+//! 
+//! let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+//! axum::serve(listener, routes)
+//!     .with_graceful_shutdown(shutdown_token.cancelled())
+//!     .await
+//!     .unwrap();
+//! 
+//! cache_manager.shutdown().await;
 //! ```
 //! 
-//! By this, you can use Axum middleware to cache your data.
+//! By this, you can use Axum middleware to cache your data.''
 //!
 //!
 //!

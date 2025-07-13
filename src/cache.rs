@@ -6,6 +6,8 @@ use tokio::time::{sleep, Duration};
 use redis::{aio::MultiplexedConnection, AsyncCommands};
 use colored::*;
 use futures_util::StreamExt;
+use tokio_util::sync::CancellationToken;
+use tokio::task::JoinHandle;
 
 /// Cache system config.
 /// - `redis_url`: Redis server URL
@@ -115,6 +117,9 @@ pub struct CacheManager {
     pub key: String,
     pub config: CacheConfig,
     put_cache_function: fn(String, String) -> String,
+    write_behind_handle: JoinHandle<()>,
+    delete_event_handle: JoinHandle<()>,
+    cancellation_token: CancellationToken,
 }
 
 impl CacheManager {
@@ -136,14 +141,18 @@ impl CacheManager {
         Fut1: Future<Output = ()> + Send + 'static,
         Fut2: Future<Output = ()> + Send + 'static,
     {
+        let cancellation_token = CancellationToken::new();
         // Write-behind + delete event listeners
-        tokio::spawn(write_behind(conn.clone(), db.clone(), key.clone(), config.write_duration.clone(), put_function));
-        tokio::spawn(delete_event_listener(client, db.clone(), key.clone(), delete_function));
+        let write_behind_handle = tokio::spawn(write_behind(conn.clone(), db.clone(), key.clone(), config.write_duration.clone(), put_function, cancellation_token.clone()));
+        let delete_event_handle = tokio::spawn(delete_event_listener(client, db.clone(), key.clone(), delete_function, cancellation_token.clone()));
         CacheManager {
             conn,
             key,
             config,
             put_cache_function,
+            write_behind_handle,
+            delete_event_handle,
+            cancellation_token,
         }
     }
 
@@ -154,6 +163,18 @@ impl CacheManager {
             write_to_cache: self.put_cache_function,
         }
     }
+
+    /// Signals shutdown and waits for background tasks to complete.
+    pub async fn shutdown(self) {
+        println!("{} Cache manager graceful shutdown", "Shutdown".red().bold());
+        // Signal shutdown to background tasks
+        self.cancellation_token.cancel();
+        // Wait for tasks to finish
+
+        let _ = tokio::join!(self.write_behind_handle, self.delete_event_handle);
+        println!("{} Cache manager shutdown gracefully.", "Done".green().bold());
+    }
+
 }
 
 /// Minimal state for middleware.
@@ -173,6 +194,7 @@ async fn write_behind<F, Fut, DB>(
     root_key: String,
     duration: u64,
     write_function: F,
+    token: CancellationToken,
 )
 where
     F: Fn(Pool<DB>, String) -> Fut,
@@ -181,32 +203,50 @@ where
 {
     println!("{} Redis write behind thread", "Start".green().bold());
     loop {
-        // Scan for dirty keys
-        let dirty_key = format!("dirty:{}:*", root_key);
-        let keys: Vec<String> = match conn.keys(&dirty_key).await {
-            Ok(k) => k,
-            Err(e) => {
-                eprintln!("❌ Failed to get keys: {e}");
-                sleep(Duration::from_secs(5)).await;
-                continue;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(duration)) => {
+                // Scan for dirty keys
+                let dirty_key = format!("dirty:{}:*", root_key);
+                let keys: Vec<String> = match conn.keys(&dirty_key).await {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!("❌ Failed to get keys: {e}");
+                        continue;
+                    }
+                };
+
+                for key in keys {
+                    println!("key : {key}");
+                    if let Ok(Some(bytes)) = conn.get::<_, Option<String>>(&key).await {
+                        // Write to DB
+                        write_function(db.clone(), bytes.clone()).await;
+
+                        // Clean up dirty key, set clean with short TTL
+                        let _: () = conn.del(&key).await.unwrap_or(());
+                        let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
+                        let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
+                        println!("Write behind for : {key}");
+                    }
+                }
             }
-        };
-
-        for key in keys {
-            println!("key : {key}");
-            if let Ok(Some(bytes)) = conn.get::<_, Option<String>>(&key).await {
-                // Write to DB
-                write_function(db.clone(), bytes.clone()).await;
-
-                // Clean up dirty key, set clean with short TTL
-                let _: () = conn.del(&key).await.unwrap_or(());
-                let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
-                let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
-                println!("Write behind for : {key}");
+            _ = token.cancelled() => {
+                println!("{} Write-behind task shutting down...", "Shutdown".red().bold());
+                // Perform one final write for all dirty keys before exiting
+                let dirty_key = format!("dirty:{}:*", root_key);
+                if let Ok(keys) = conn.keys::<_, Vec<String>>(&dirty_key).await {
+                    for key in keys {
+                        if let Ok(Some(bytes)) = conn.get::<_, Option<String>>(&key).await {
+                            write_function(db.clone(), bytes.clone()).await;
+                            let _: () = conn.del(&key).await.unwrap_or(());
+                            let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
+                            let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
+                            println!("Final write for: {key}");
+                        }
+                    }
+                }
+                break;
             }
         }
-        // Sleep interval
-        sleep(Duration::from_secs(duration)).await;
     }
 }
 
@@ -217,24 +257,46 @@ async fn delete_event_listener<F, Fut, DB: Database>(
     db: Pool<DB>,
     root_key: String,
     delete_function: F,
+    token: CancellationToken,
 )
 where
     F: Fn(Pool<DB>, String) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let mut pubsub_conn = client.get_async_pubsub().await.unwrap();
+    let mut pubsub_conn = match client.get_async_pubsub().await {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("❌ Failed to get pubsub connection: {e}");
+            return;
+        }
+    };
 
     // Subscribe to Redis key expire events
-    pubsub_conn.subscribe("__keyevent@0__:expired").await.unwrap();
+    if let Err(e) = pubsub_conn.subscribe("__keyevent@0__:expired").await {
+        eprintln!("❌ Failed to subscribe to key events: {e}");
+        return;
+    }
+    let mut pubsub_stream = pubsub_conn.on_message();
 
     println!("{} Redis expired event listening", "Start".green().bold());
-    while let Some(msg) = pubsub_conn.on_message().next().await {
-        let expired_key: String = msg.get_payload().unwrap();
+    loop {
+        tokio::select! {
+            Some(msg) = pubsub_stream.next() => {
+                let expired_key: String = match msg.get_payload() {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
 
-        let prefix = format!("delete:{}:", root_key);
-        if let Some(post_id_str) = expired_key.strip_prefix(&prefix) {
-            // Call delete handler
-            delete_function(db.clone(), post_id_str.to_string()).await;
+                let prefix = format!("delete:{}:", root_key);
+                if let Some(post_id_str) = expired_key.strip_prefix(&prefix) {
+                    // Call delete handler
+                    delete_function(db.clone(), post_id_str.to_string()).await;
+                }
+            }
+            _ = token.cancelled() => {
+                println!("{} Delete event listener shutting down...", "Shutdown".red().bold());
+                break;
+            }
         }
     }
 }
