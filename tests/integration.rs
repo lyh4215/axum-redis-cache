@@ -6,13 +6,11 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
     middleware::from_fn_with_state,
-    extract::State,
-    response::IntoResponse,
 };
 use tower::ServiceExt;
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use sqlx::{postgres::PgPoolOptions};
 use axum_redis_cache::{CacheConnection}; // 경로에 따라 조정
-use std::{env, time::Duration};
+use std::{time::Duration};
 use tokio::time::sleep;
 
 /// 테이블 생성 SQL (테스트용)
