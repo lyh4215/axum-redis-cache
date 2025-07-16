@@ -1,6 +1,8 @@
 # axum-redis-cache
 
 `axum-redis-cache` is a Redis caching middleware and background worker for [Axum](https://github.com/tokio-rs/axum).
+[![CI](https://github.com/lyh4215/axum-redis-cache/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lyh4215/axum-redis-cache/actions/workflows/ci.yml)
+
 
 It enables **easily adding CRUD Redis caching** to your Axum applications with **write-behind policy support**.
 ![Diagram](.github/images/diagram.png)
