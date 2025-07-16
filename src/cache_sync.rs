@@ -1,6 +1,8 @@
 // src/cache_sync.rs
 
-use redis::{aio::MultiplexedConnection, AsyncCommands};
+use redis::{aio::MultiplexedConnection,
+            AsyncCommands,
+            Script};
 use tokio_util::sync::CancellationToken;
 use sqlx::{Database, Pool};
 use tokio::time::{Duration};
@@ -43,11 +45,35 @@ where
                         // Write to DB
                         write_function(db.clone(), bytes.clone()).await;
 
-                        // Clean up dirty key, set clean with short TTL
-                        let _: () = conn.del(&key).await.unwrap_or(());
                         let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
+
+                        // Clean up dirty key, set clean with short TTL
+                        /*let _: () = conn.del(&key).await.unwrap_or(());
+                        
                         let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
-                        println!("  Write behind for : {key}");
+                        println!("  Write behind for : {key}");*/
+                        let ttl_sec = 10;
+                        /* atomic version (using redis script lua) */
+                        let script = Script::new(
+                            r#"
+                            local dirty_key = KEYS[1]
+                            local clean_key = KEYS[2]
+                            local value = ARGV[1]
+                            local ttl_sec = ARGV[2]
+                            redis.call('del', dirty_key)
+                            redis.call('setex', clean_key, ttl_sec, value)
+                            return 1
+                            "#,
+                        );
+
+                        let _: i32 = script
+                            .key(key)
+                            .key(clean_key)
+                            .arg(bytes)
+                            .arg(ttl_sec)
+                            .invoke_async(&mut conn)
+                            .await
+                            .expect("Failed to execute write-behind script");
                     }
                 }
             }
@@ -58,11 +84,38 @@ where
                 if let Ok(keys) = conn.keys::<_, Vec<String>>(&dirty_key).await {
                     for key in keys {
                         if let Ok(Some(bytes)) = conn.get::<_, Option<String>>(&key).await {
-                            write_function(db.clone(), bytes.clone()).await;
-                            let _: () = conn.del(&key).await.unwrap_or(());
+
+                            // let _: () = conn.del(&key).await.unwrap_or(());
+                            // let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
+                            // let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
+                            // println!("  Final write for: {key}");
+                            let script = Script::new(
+                                r#"
+                                local dirty_key = KEYS[1]
+                                local clean_key = KEYS[2]
+                                local value = ARGV[1]
+                                local ttl_sec = tonumber(ARGV[2])
+                            
+                                redis.call('del', dirty_key)
+                                redis.call('setex', clean_key, ttl_sec, value)
+                            
+                                return 1
+                                "#
+                            );
+                            
                             let clean_key = key.strip_prefix("dirty:").unwrap_or(&key).to_string();
-                            let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
-                            println!("  Final write for: {key}");
+                            
+                            let _: i32 = script
+                                .key(&key)            // dirty key
+                                .key(&clean_key)      // clean key
+                                .arg(bytes.clone())   // value
+                                .arg(10)              // TTL
+                                .invoke_async(&mut conn)
+                                .await
+                                .unwrap_or(0);
+                            
+                            println!("  Final write (atomic) for: {key}");
+                            write_function(db.clone(), bytes.clone()).await;
                         }
                     }
                 }
