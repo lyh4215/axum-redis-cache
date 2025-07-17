@@ -22,6 +22,8 @@ You should inject your own logic to read, write, or delete data from your databa
 - **Write-behind worker**: Periodically flushes cached data to your database. Call your `put_function`.
 - **Delete-event listener**: Listens for Redis key expiration events to trigger database deletion for stale data. Call your `delete_function`.
 
+### Graceful Shutdown
+- `shutdown` in `struct CacheManager` implemented graceful shutdown.
 
 ## Installation
 
