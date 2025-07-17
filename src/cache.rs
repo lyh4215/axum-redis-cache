@@ -6,12 +6,12 @@ use redis::{aio::MultiplexedConnection};
 use colored::*;
 use tokio_util::sync::CancellationToken;
 use tokio::task::JoinHandle;
+use std::sync::{Arc, Mutex};
 
 use crate::cache_sync;
 
 /// Cache system config.
 /// - `redis_url`: Redis server URL
-/// - `write_duration`: Write-behind worker interval (sec)
 #[derive(Debug, Clone)]
 pub struct CacheConnConfig {
     pub redis_url: String,
@@ -95,7 +95,6 @@ impl<DB: Database> CacheConnection<DB> {
                         self.client.clone(),
                         self.conn.clone(),
                         key,
-                        CacheConfig::default(),
                         put_function,
                         delete_function,
                         put_cache_function)
@@ -103,9 +102,11 @@ impl<DB: Database> CacheConnection<DB> {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct CacheConfig {
     pub write_duration: u64,
+    pub ttl_clean: u64,
+    pub ttl_deleted: u64,
 }
 
 
@@ -114,11 +115,25 @@ impl CacheConfig {
     pub fn new() -> Self {
         CacheConfig {
             write_duration: 5, // Default to 5 seconds
+            ttl_clean: 60,     // Default to 60 seconds
+            ttl_deleted: 10,   // Default to 10 seconds
         }
     }
     /// Set custom write-behind interval.
     pub fn with_write_duration(mut self, duration: u64) -> Self {
         self.write_duration = duration;
+        self
+    }
+
+    /// Set custom TTL for clean entries.
+    pub fn with_clean_ttl(mut self, ttl: u64) -> Self {
+        self.ttl_clean = ttl;
+        self
+    }
+
+    /// Set custom TTL for deleted entries.
+    pub fn with_deleted_ttl(mut self, ttl: u64) -> Self {
+        self.ttl_deleted = ttl;
         self
     }
 }
@@ -134,7 +149,7 @@ impl Default for CacheConfig {
 pub struct CacheManager {
     pub conn: MultiplexedConnection,
     pub key: String,
-    pub config: CacheConfig,
+    pub config: Arc<Mutex<CacheConfig>>,
 
     /* Handler for Cache Write-behind */
     put_cache_function: fn(String, String) -> String,
@@ -156,7 +171,6 @@ impl CacheManager {
         client: redis::Client,
         conn: MultiplexedConnection,
         key: String,
-        config: CacheConfig,
 
         /* user-defined function */
         put_function: F,
@@ -170,9 +184,12 @@ impl CacheManager {
         Fut2: Future<Output = ()> + Send + 'static,
     {
         let cancellation_token = CancellationToken::new();
+        let config = Arc::new(Mutex::new(CacheConfig::default()));
+
         // Write-behind + delete event listeners
-        let write_behind_handle = tokio::spawn(cache_sync::write_behind(conn.clone(), db.clone(), key.clone(), config.write_duration.clone(), put_function, cancellation_token.clone()));
+        let write_behind_handle = tokio::spawn(cache_sync::write_behind(conn.clone(), db.clone(), key.clone(), Arc::clone(&config), put_function, cancellation_token.clone()));
         let delete_event_handle = tokio::spawn(cache_sync::delete_event_listener(client, db.clone(), key.clone(), delete_function, cancellation_token.clone()));
+        
         CacheManager {
             conn,
             key,
@@ -184,11 +201,18 @@ impl CacheManager {
         }
     }
 
+    /// Set a new cache configuration.
+    pub fn with_config(self, config: CacheConfig) -> Self {
+        *self.config.lock().unwrap() = config;
+        self
+    }
+
     /// Return CacheState for Axum middleware injection.
     pub fn get_state(&self) -> CacheState {
         CacheState {
             conn: self.conn.clone(),
             write_to_cache: self.put_cache_function,
+            config: self.config.clone(),
         }
     }
 
@@ -212,4 +236,5 @@ impl CacheManager {
 pub struct CacheState {
     pub conn: MultiplexedConnection,
     pub write_to_cache: fn(String, String) -> String,
+    pub config: Arc<Mutex<CacheConfig>>,
 }

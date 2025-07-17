@@ -91,7 +91,8 @@ pub async fn middleware(
             // Remove both dirty/clean, mark deleted for soft delete TTL
             let _: RedisResult<i32> = conn.del(&key).await;
             let _: RedisResult<i32> = conn.del(&format!("dirty:{}", key)).await;
-            let _: RedisResult<()> = conn.set_ex(&format!("delete:{}", key), "1", 10).await;
+            let ttl = state.config.lock().unwrap().ttl_deleted;
+            let _: RedisResult<()> = conn.set_ex(&format!("delete:{}", key), "1", ttl).await;
 
             return Ok(
                 Response::builder()
@@ -115,8 +116,9 @@ pub async fn middleware(
             let collected = body.collect().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let bytes: Bytes = collected.to_bytes();
             let string_body = String::from_utf8_lossy(&bytes).to_string();
-            // Store in Redis (TTL: 60s)
-            match conn.set_ex::<_, _, ()>(key, string_body, 60).await {
+            // Store in Redis with dynamic TTL from config
+            let ttl = state.config.lock().unwrap().ttl_clean;
+            match conn.set_ex::<_, _, ()>(key, string_body, ttl).await {
                 Ok(_) => (),
                 Err(_) => {
                     return Err(StatusCode::INTERNAL_SERVER_ERROR);

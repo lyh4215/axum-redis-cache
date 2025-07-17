@@ -9,9 +9,8 @@
 //! # Example
 //! 
 //! You can use sqlx DB.
-//! Use Example (with no custom config : you can't change config in this case):
+//! Use Example:
 //! ```rust,ignore
-
 //! let db : sqlx::Pool<DB> = /* your DB */;
 //! let cache_connection = axum_redis_cache::CacheConnection::new(db.clone()).await;
 //! let key = String::from("posts");
@@ -59,12 +58,14 @@
 //!     serde_json::to_string(&post).unwrap()
 //! }
 //! 
-//! let mut cache_manager = cache_connection.get_manager(
+//! let cache_config = axum_redis_cache::CacheConfig::new().with_clean_ttl(30); // Optional: configure TTL
+//! 
+//! let cache_manager = cache_connection.get_manager(
 //!     key,
 //!     write_callback,
 //!     delete_callback,
 //!     update_entity,
-//! );
+//! ).with_config(cache_config); // Optional: apply config
 //! 
 //! let routes = axum::Router::new()
 //!     .route("/posts/:id", get(/* your get handler */)
@@ -88,7 +89,7 @@
 //! cache_manager.shutdown().await;
 //! ```
 //! 
-//! By this, you can use Axum middleware to cache your data.''
+//! By this, you can use Axum middleware to cache your data.'''''
 //!
 //! For usage and examples, see [README](https://github.com/lyh4215/axum-redis-cache).
 

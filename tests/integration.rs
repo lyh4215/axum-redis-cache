@@ -9,13 +9,26 @@ use axum::{
 };
 use tower::ServiceExt;
 use sqlx::{postgres::PgPoolOptions};
-use axum_redis_cache::{CacheConnection}; // 경로에 따라 조정
+use axum_redis_cache::{CacheConnection, CacheConfig}; // 경로에 따라 조정
 use std::{time::Duration};
 use tokio::time::sleep;
+use redis::AsyncCommands;
 
 /// 테이블 생성 SQL (테스트용)
-const INIT_SQL: &str = r#"
+const INIT_SQL_POSTS: &str = r#"
 CREATE TABLE IF NOT EXISTS posts (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);"#;
+
+const INIT_SQL_POSTS_TTL: &str = r#"
+CREATE TABLE IF NOT EXISTS posts_ttl (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL
+);"#;
+
+const INIT_SQL_POSTS_DELETE_TTL: &str = r#"
+CREATE TABLE IF NOT EXISTS posts_delete_ttl (
     id SERIAL PRIMARY KEY,
     content TEXT NOT NULL
 );"#;
@@ -43,10 +56,10 @@ async fn test_cache_middleware_postgres() {
     };
 
     // (3) 테스트 테이블 준비 (없으면 생성)
-    sqlx::query(INIT_SQL).execute(&pool).await.unwrap();
+    sqlx::query(INIT_SQL_POSTS).execute(&pool).await.unwrap();
 
     // (4) CacheConnection, CacheManager 준비
-    let cache = CacheConnection::new(pool.clone()).await;
+    let mut cache = CacheConnection::new(pool.clone()).await;
     let manager = cache.get_manager(
         "posts".to_string(),
         |_db, _s| Box::pin(async {}),
@@ -116,4 +129,112 @@ async fn test_cache_middleware_postgres() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_cache_ttl() {
+    let db_url = "postgres://testuser:testpw@localhost:5432/testdb";
+    let pool = loop {
+        match PgPoolOptions::new().max_connections(5).connect(db_url).await {
+            Ok(pool) => break pool,
+            Err(e) => {
+                eprintln!("DB 연결 재시도: {e}");
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
+
+    sqlx::query(INIT_SQL_POSTS_TTL).execute(&pool).await.unwrap();
+
+    let mut cache = CacheConnection::new(pool.clone()).await;
+    let cache_config = CacheConfig::new().with_clean_ttl(5); // 5초 TTL
+    let manager = cache.get_manager(
+        "posts_ttl".to_string(),
+        |_db, _s| Box::pin(async {}),
+        |_db, _s| Box::pin(async {}),
+        merge_json,
+    ).with_config(cache_config);
+
+    let app = Router::new()
+        .route("/posts_ttl/:id", get(|| async { "ttl test" }))
+        .with_state(pool.clone())
+        .layer(from_fn_with_state(manager.get_state(), axum_redis_cache::middleware));
+
+    // (1) GET 요청으로 캐시 생성
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/posts_ttl/ttl_test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // (2) 3초 후, 키가 아직 존재하는지 확인
+    sleep(Duration::from_secs(3)).await;
+    let key_exists: bool = cache.conn.exists("posts_ttl:ttl_test").await.unwrap();
+    assert!(key_exists);
+
+    // (3) 추가 3초 후 (총 6초), 키가 만료되었는지 확인
+    sleep(Duration::from_secs(3)).await;
+    let key_exists: bool = cache.conn.exists("posts_ttl:ttl_test").await.unwrap();
+    assert!(!key_exists);
+}
+
+#[tokio::test]
+async fn test_cache_delete_ttl() {
+    let db_url = "postgres://testuser:testpw@localhost:5432/testdb";
+    let pool = loop {
+        match PgPoolOptions::new().max_connections(5).connect(db_url).await {
+            Ok(pool) => break pool,
+            Err(e) => {
+                eprintln!("DB 연결 재시도: {e}");
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
+
+    sqlx::query(INIT_SQL_POSTS_DELETE_TTL).execute(&pool).await.unwrap();
+
+    let mut cache = CacheConnection::new(pool.clone()).await;
+    let cache_config = CacheConfig::new().with_deleted_ttl(5); // 5초 TTL
+    let manager = cache.get_manager(
+        "posts_delete_ttl".to_string(),
+        |_db, _s| Box::pin(async {}),
+        |_db, _s| Box::pin(async {}),
+        merge_json,
+    ).with_config(cache_config);
+
+    let app = Router::new()
+        .route("/posts_delete_ttl/:id", delete(|| async { "" }))
+        .with_state(pool.clone())
+        .layer(from_fn_with_state(manager.get_state(), axum_redis_cache::middleware));
+
+    // (1) DELETE 요청으로 delete: 키 생성
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/posts_delete_ttl/delete_test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // (2) 3초 후, delete: 키가 아직 존재하는지 확인
+    sleep(Duration::from_secs(3)).await;
+    let key_exists: bool = cache.conn.exists("delete:posts_delete_ttl:delete_test").await.unwrap();
+    assert!(key_exists);
+
+    // (3) 추가 3초 후 (총 6초), delete: 키가 만료되었는지 확인
+    sleep(Duration::from_secs(3)).await;
+    let key_exists: bool = cache.conn.exists("delete:posts_delete_ttl:delete_test").await.unwrap();
+    assert!(!key_exists);
 }

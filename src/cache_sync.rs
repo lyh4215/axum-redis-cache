@@ -16,17 +16,18 @@ pub async fn write_behind<F, Fut, DB>(
     mut conn: MultiplexedConnection,
     db: Pool<DB>,
     root_key: String,
-    duration: u64,
+    config: std::sync::Arc<std::sync::Mutex<crate::cache::CacheConfig>>,
     write_function: F,
     token: CancellationToken,
 )
 where
     F: Fn(Pool<DB>, String) -> Fut,
-    Fut: Future<Output = ()>,
+    Fut: std::future::Future<Output = ()>,
     DB: Database,
 {
     println!("{} Redis write behind thread", "Start".green().bold());
     loop {
+        let duration = config.lock().unwrap().write_duration;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(duration)) => {
                 // Scan for dirty keys
@@ -52,7 +53,7 @@ where
                         
                         let _: () = conn.set_ex(&clean_key, bytes, 10).await.unwrap_or(());
                         println!("  Write behind for : {key}");*/
-                        let ttl_sec = 10;
+                        let ttl_sec = config.lock().unwrap().ttl_clean;
                         /* atomic version (using redis script lua) */
                         let script = Script::new(
                             r#"
