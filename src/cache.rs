@@ -8,6 +8,10 @@ use tokio_util::sync::CancellationToken;
 use tokio::task::JoinHandle;
 use std::sync::{Arc, Mutex};
 
+use std::thread::sleep;
+use std::time::Duration;
+use redis::{Client, Connection};
+
 use crate::cache_sync;
 
 /// Cache system config.
@@ -60,7 +64,7 @@ impl<DB: Database> CacheConnection<DB> {
         config: CacheConnConfig,
     ) -> CacheConnection<DB> {
         let redis_client = redis::Client::open(config.redis_url.clone()).expect("Invalid Redis URL");
-        let mut con = redis_client.get_connection().expect("Failed to connect to Redis");
+        let mut con = get_redis_connection_with_retry(&redis_client);
         let _: () = redis::cmd("CONFIG")
             .arg("SET")
             .arg("notify-keyspace-events")
@@ -237,4 +241,31 @@ pub struct CacheState {
     pub conn: MultiplexedConnection,
     pub write_to_cache: fn(String, String) -> String,
     pub config: Arc<Mutex<CacheConfig>>,
+}
+
+fn get_redis_connection_with_retry(redis_client: &Client) -> Connection {
+    let mut attempts = 0;
+    let max_attempts = 6;
+    let wait_duration = Duration::from_secs(10);
+
+    loop {
+        match redis_client.get_connection() {
+            Ok(conn) => return conn,
+            Err(err) => {
+                attempts += 1;
+                if attempts >= max_attempts {
+                    panic!("Failed to connect to Redis after {} attempts: {}", attempts, err);
+                } else {
+                    eprintln!(
+                        "Redis connection failed (attempt {}/{}), retrying in {}s...: {}",
+                        attempts,
+                        max_attempts,
+                        wait_duration.as_secs(),
+                        err
+                    );
+                    sleep(wait_duration);
+                }
+            }
+        }
+    }
 }
