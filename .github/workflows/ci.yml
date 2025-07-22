@@ -12,51 +12,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_DB: testdb
-          POSTGRES_USER: testuser
-          POSTGRES_PASSWORD: testpw
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
     - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
         override: true
-    - name: Install SQLx CLI (for offline mode, optional)
-      run: cargo install sqlx-cli --no-default-features --features postgres
-    - name: Install redis-cli
-      run: sudo apt-get update && sudo apt-get install -y redis-tools
-    - name: Wait for services
-      run: |
-        for i in {1..10}; do
-          pg_isready -h localhost -U testuser && break
-          sleep 2
-        done
-        for i in {1..10}; do
-          redis-cli ping && break
-          sleep 2
-        done
     - name: Run tests
-      env:
-        DATABASE_URL: postgres://testuser:testpw@localhost:5432/testdb
+
       run: cargo test -- --test-threads=1 --nocapture
