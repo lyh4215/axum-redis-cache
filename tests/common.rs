@@ -52,3 +52,9 @@ pub async fn start_postgres() -> PgStruct {
         container,
     }
 }
+
+
+/// Merge 함수 (예시)
+pub fn merge_json(_old: String, new: String) -> String {
+    new
+}
