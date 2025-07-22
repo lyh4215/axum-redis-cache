@@ -37,5 +37,9 @@ axum-redis-cache = { git = "https://github.com/lyh4215/axum-redis-cache.git", br
 ## example
 https://github.com/lyh4215/neural-notes-axum
 
+## test
+1. install docker
+2. do `$ cargo test`
+
 ## Contributing
 Contributions are welcome and appreciated!
