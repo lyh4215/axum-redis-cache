@@ -14,6 +14,8 @@ use redis::{Client, Connection};
 
 use crate::cache_sync;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Cache system config.
 /// - `redis_url`: Redis server URL
 #[derive(Debug, Clone)]
@@ -157,11 +159,12 @@ pub struct CacheManager {
 
     /* Handler for Cache Write-behind */
     put_cache_function: fn(String, String) -> String,
-    write_behind_handle: JoinHandle<()>,
-    delete_event_handle: JoinHandle<()>,
+    write_behind_handle: Option<JoinHandle<()>>,
+    delete_event_handle: Option<JoinHandle<()>>,
 
     /* For graceful Shutdown */
     cancellation_token: CancellationToken,
+    is_shutdown: std::sync::atomic::AtomicBool,
 }
 
 impl CacheManager {
@@ -199,9 +202,10 @@ impl CacheManager {
             key,
             config,
             put_cache_function,
-            write_behind_handle,
-            delete_event_handle,
+            write_behind_handle: Some(write_behind_handle),
+            delete_event_handle: Some(delete_event_handle),
             cancellation_token,
+            is_shutdown: AtomicBool::new(false),
         }
     }
 
@@ -221,16 +225,37 @@ impl CacheManager {
     }
 
     /// Signals shutdown and waits for background tasks to complete.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&mut self) {
         println!("{} Cache manager graceful shutdown", "Shutdown".red().bold());
         // Signal shutdown to background tasks
         self.cancellation_token.cancel();
         // Wait for tasks to finish
+        self.is_shutdown.store(true, Ordering::SeqCst);
 
-        let _ = tokio::join!(self.write_behind_handle, self.delete_event_handle);
+        /* can't move when drop trait is impl */
+        //let _ = tokio::join!(self.write_behind_handle, self.delete_event_handle);
+        if let Some(handle) = self.write_behind_handle.take() {
+            let _ = handle.await;
+        }
+
+        if let Some(handle) = self.delete_event_handle.take() {
+            let _ = handle.await;
+        }
+
         println!("{} Cache manager shutdown gracefully.", "Done".green().bold());
     }
 
+}
+
+impl Drop for CacheManager {
+    fn drop(&mut self) {
+        if !self.is_shutdown.load(Ordering::SeqCst) {
+            // 개발 중이라면 panic도 가능
+            eprintln!("⚠️ CacheManager dropped without shutdown(). This may cause data loss.");
+            #[cfg(debug_assertions)]
+            panic!("CacheManager dropped without calling shutdown()");
+        }
+    }
 }
 
 /// Minimal state for `middleware`.
@@ -269,3 +294,5 @@ fn get_redis_connection_with_retry(redis_client: &Client) -> Connection {
         }
     }
 }
+
+

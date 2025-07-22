@@ -114,7 +114,7 @@ pub async fn middleware(
             // Extract response body
             let (parts, body) = response.into_parts();
 
-            if (parts.status != StatusCode::OK) {
+            if parts.status != StatusCode::OK {
                 return Ok(Response::from_parts(parts, Body::empty()));
             }
             

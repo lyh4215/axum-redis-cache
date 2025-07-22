@@ -35,10 +35,7 @@ CREATE TABLE IF NOT EXISTS posts_delete_ttl (
     content TEXT NOT NULL
 );"#;
 
-/// Merge 함수 (예시)
-fn merge_json(_old: String, new: String) -> String {
-    new
-}
+
 
 #[tokio::test]
 async fn test_cache_middleware_postgres() {
@@ -56,11 +53,11 @@ async fn test_cache_middleware_postgres() {
     let cache_conn_config = CacheConnConfig::new()
         .with_url(&redis_url);
     let cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
-    let manager = cache.get_manager(
+    let mut manager = cache.get_manager(
         "posts".to_string(),
         |_db, _s| Box::pin(async {}),
         |_db, _s| Box::pin(async {}),
-        merge_json,
+        common::merge_json,
     );
 
     // (5) axum 라우터 준비
@@ -125,6 +122,9 @@ async fn test_cache_middleware_postgres() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // (10) CacheManager shutdown
+    manager.shutdown().await;
 }
 
 #[tokio::test]
@@ -141,11 +141,11 @@ async fn test_cache_ttl() {
         .with_url(&redis_url);
     let mut cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
     let cache_config = CacheConfig::new().with_clean_ttl(5); // 5초 TTL
-    let manager = cache.get_manager(
+    let mut manager = cache.get_manager(
         "posts_ttl".to_string(),
         |_db, _s| Box::pin(async {}),
         |_db, _s| Box::pin(async {}),
-        merge_json,
+        common::merge_json,
     ).with_config(cache_config);
 
     let app = Router::new()
@@ -176,6 +176,8 @@ async fn test_cache_ttl() {
     sleep(Duration::from_secs(3)).await;
     let key_exists: bool = cache.conn.exists("posts_ttl:ttl_test").await.unwrap();
     assert!(!key_exists);
+    // (4) CacheManager shutdown
+    manager.shutdown().await;
 }
 
 #[tokio::test]
@@ -192,11 +194,11 @@ async fn test_cache_delete_ttl() {
         .with_url(&redis_url);
     let mut cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
     let cache_config = CacheConfig::new().with_deleted_ttl(5); // 5초 TTL
-    let manager = cache.get_manager(
+    let mut manager = cache.get_manager(
         "posts_delete_ttl".to_string(),
         |_db, _s| Box::pin(async {}),
         |_db, _s| Box::pin(async {}),
-        merge_json,
+        common::merge_json,
     ).with_config(cache_config);
 
     let app = Router::new()
@@ -227,4 +229,7 @@ async fn test_cache_delete_ttl() {
     sleep(Duration::from_secs(3)).await;
     let key_exists: bool = cache.conn.exists("delete:posts_delete_ttl:delete_test").await.unwrap();
     assert!(!key_exists);
+
+    // (4) CacheManager shutdown
+    manager.shutdown().await;
 }
