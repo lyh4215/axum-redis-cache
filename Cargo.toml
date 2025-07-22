@@ -29,3 +29,5 @@ colored = "2"
 tower = { version = "0.4", features = ["util"]}
 mockall = "0.12"
 sqlx = { version = "0.7", features = ["sqlite", "postgres"] }
+testcontainers = "0.24.0"
+testcontainers-modules = {version = "0.12.1", features = ["redis", "postgres"]}

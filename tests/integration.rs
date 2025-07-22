@@ -8,11 +8,13 @@ use axum::{
     middleware::from_fn_with_state,
 };
 use tower::ServiceExt;
-use sqlx::{postgres::PgPoolOptions};
-use axum_redis_cache::{CacheConnection, CacheConfig}; // 경로에 따라 조정
+use axum_redis_cache::{CacheConnection, CacheConfig, CacheConnConfig}; // 경로에 따라 조정
 use std::{time::Duration};
 use tokio::time::sleep;
 use redis::AsyncCommands;
+
+#[path = "common.rs"]
+mod common;
 
 /// 테이블 생성 SQL (테스트용)
 const INIT_SQL_POSTS: &str = r#"
@@ -40,26 +42,20 @@ fn merge_json(_old: String, new: String) -> String {
 
 #[tokio::test]
 async fn test_cache_middleware_postgres() {
-    // (1) docker-compose로 postgres, redis 올려둘 것!
-    //     docker-compose up -d
+    //binding
+    let pgstruct  = common::start_postgres().await;
+    let pool = pgstruct.pool;
 
-    // (2) DB 커넥션 정보 (docker-compose와 맞춰야 함)
-    let db_url = "postgres://testuser:testpw@localhost:5432/testdb";
-    let pool = loop {
-        match PgPoolOptions::new().max_connections(5).connect(db_url).await {
-            Ok(pool) => break pool,
-            Err(e) => {
-                eprintln!("DB 연결 재시도: {e}");
-                sleep(Duration::from_secs(1)).await;
-            }
-        }
-    };
+    let redisstruct = common::start_redis().await;
+    let redis_url = redisstruct.url;
 
     // (3) 테스트 테이블 준비 (없으면 생성)
     sqlx::query(INIT_SQL_POSTS).execute(&pool).await.unwrap();
 
     // (4) CacheConnection, CacheManager 준비
-    let mut cache = CacheConnection::new(pool.clone()).await;
+    let cache_conn_config = CacheConnConfig::new()
+        .with_url(&redis_url);
+    let cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
     let manager = cache.get_manager(
         "posts".to_string(),
         |_db, _s| Box::pin(async {}),
@@ -133,20 +129,17 @@ async fn test_cache_middleware_postgres() {
 
 #[tokio::test]
 async fn test_cache_ttl() {
-    let db_url = "postgres://testuser:testpw@localhost:5432/testdb";
-    let pool = loop {
-        match PgPoolOptions::new().max_connections(5).connect(db_url).await {
-            Ok(pool) => break pool,
-            Err(e) => {
-                eprintln!("DB 연결 재시도: {e}");
-                sleep(Duration::from_secs(1)).await;
-            }
-        }
-    };
+    let pgstruct  = common::start_postgres().await;
+    let pool = pgstruct.pool;
+
+    let redisstruct = common::start_redis().await;
+    let redis_url = redisstruct.url;
 
     sqlx::query(INIT_SQL_POSTS_TTL).execute(&pool).await.unwrap();
 
-    let mut cache = CacheConnection::new(pool.clone()).await;
+    let cache_conn_config = CacheConnConfig::new()
+        .with_url(&redis_url);
+    let mut cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
     let cache_config = CacheConfig::new().with_clean_ttl(5); // 5초 TTL
     let manager = cache.get_manager(
         "posts_ttl".to_string(),
@@ -187,20 +180,17 @@ async fn test_cache_ttl() {
 
 #[tokio::test]
 async fn test_cache_delete_ttl() {
-    let db_url = "postgres://testuser:testpw@localhost:5432/testdb";
-    let pool = loop {
-        match PgPoolOptions::new().max_connections(5).connect(db_url).await {
-            Ok(pool) => break pool,
-            Err(e) => {
-                eprintln!("DB 연결 재시도: {e}");
-                sleep(Duration::from_secs(1)).await;
-            }
-        }
-    };
+    let pgstruct  = common::start_postgres().await;
+    let pool = pgstruct.pool;
+
+    let redisstruct = common::start_redis().await;
+    let redis_url = redisstruct.url;
 
     sqlx::query(INIT_SQL_POSTS_DELETE_TTL).execute(&pool).await.unwrap();
 
-    let mut cache = CacheConnection::new(pool.clone()).await;
+    let cache_conn_config = CacheConnConfig::new()
+        .with_url(&redis_url);
+    let mut cache = CacheConnection::new_with_config(pool.clone(), cache_conn_config).await;
     let cache_config = CacheConfig::new().with_deleted_ttl(5); // 5초 TTL
     let manager = cache.get_manager(
         "posts_delete_ttl".to_string(),
