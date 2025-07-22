@@ -113,6 +113,11 @@ pub async fn middleware(
         Method::GET | Method::PUT => {
             // Extract response body
             let (parts, body) = response.into_parts();
+
+            if (parts.status != StatusCode::OK) {
+                return Ok(Response::from_parts(parts, Body::empty()));
+            }
+            
             let collected = body.collect().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let bytes: Bytes = collected.to_bytes();
             let string_body = String::from_utf8_lossy(&bytes).to_string();
